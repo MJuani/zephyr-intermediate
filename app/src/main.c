@@ -2,15 +2,15 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/task_wdt/task_wdt.h>
 
-LOG_MODULE_REGISTER(l4_task1, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(l5_task1, LOG_LEVEL_DBG);
 
 #define STACK_SIZE                  2048
 
 #define SENSOR_COUNT                50
 #define SENSOR_PERIOD_MS            100
-#define SENSOR_TASK_WDT_TIMEOUT_MS  150
 
-#define LOGGER_PERIOD_MS            500
+#define LOGGER_PERIOD_MS            200
+#define LOGGER_TASK_WDT_TIMEOUT_MS  1000
 
 #define MONITOR_PERIOD_MS           100
 
@@ -36,21 +36,11 @@ K_MSGQ_DEFINE(sensor_msgq, sizeof(struct sensor_data), QUEUE_SIZE, 4);
 /*  Producer - Sensor                                                 */
 /* ================================================================== */
 
-static void sensor_thread_wdt_cb(int channel_id, void *user_data){
-    LOG_ERR("[TASK-WDT] queue is full!");
-}
-
 static void sensor_thread_fn(void *p1, void *p2, void *p3)
 {
     ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
 
     k_thread_name_set(k_current_get(), "sensor");
-
-    int wdt_chan = task_wdt_add(
-        SENSOR_TASK_WDT_TIMEOUT_MS,
-        sensor_thread_wdt_cb,
-        NULL
-    );
 
     for (int i = 0; i < SENSOR_COUNT; i++) {
         struct sensor_data data = {
@@ -68,7 +58,6 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
             LOG_WRN("[SENSOR] publish failed ret=%d", ret);
         }
 
-        task_wdt_feed(wdt_chan);
         k_msleep(SENSOR_PERIOD_MS);
     }
 
@@ -79,18 +68,28 @@ static void sensor_thread_fn(void *p1, void *p2, void *p3)
 /*  Consumer - logger                                                 */
 /* ================================================================== */
 
+static void logger_thread_wdt_cb(int channel_id, void *user_data){
+    LOG_ERR("[LOGGER-TASK-WDT] Process stuck!");
+}
+
 static void logger_thread_fn(void *p1, void *p2, void *p3)
 {
     ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
 
     k_thread_name_set(k_current_get(), "logger");
 
+    int wdt_chan = task_wdt_add(
+        LOGGER_TASK_WDT_TIMEOUT_MS,
+        logger_thread_wdt_cb,
+        NULL
+    );
+
     int received = 0;
 
     while (received < SENSOR_COUNT) {
         struct sensor_data msg;
 
-        int ret = k_msgq_get(&sensor_msgq, &msg, K_MSEC(1500));
+        int ret = k_msgq_get(&sensor_msgq, &msg, K_MSEC(500));
         if (ret != 0) {
             LOG_WRN("[LOGGER-MSG] timeout ret=%d", ret);
             break;
@@ -104,9 +103,15 @@ static void logger_thread_fn(void *p1, void *p2, void *p3)
                 msg.temperature_mc,
                 k_uptime_get_32() - msg.timestamp_ms);
 
+        if (received == 10) {
+            k_msleep(5000);   /* simulate stuck consumer (> watchdog timeout) */
+        }
+
+        task_wdt_feed(wdt_chan);                
         k_msleep(LOGGER_PERIOD_MS);
     }
 
+    task_wdt_delete(wdt_chan);
     LOG_INF("[LOGGER-MSG] done received=%d", received);
 }
 
@@ -124,7 +129,7 @@ static void queue_monitor_thread(void *p1, void *p2, void *p3)
         
         int full_percent = (used * 100) / QUEUE_SIZE;
 
-        if(full_percent == 75){
+        if(full_percent >= 75){
             LOG_WRN("[MONITOR] queue is %d%% full", full_percent);
         }
 
@@ -157,10 +162,9 @@ int main(void)
         return 0;
     }
 
-    LOG_INF("=== L4 Task1: Zbus Pub-Sub ===");
+    LOG_INF("=== L5 Task1 ===");
     LOG_INF("sensor publishes every %dms", SENSOR_PERIOD_MS);
-    LOG_INF("display listener runs in publisher context");
-    LOG_INF("logger uses message subscriber copies, loggs every %dms", LOGGER_PERIOD_MS);
+    LOG_INF("logger loggs every %dms", LOGGER_PERIOD_MS);
 
     return 0;
 }
