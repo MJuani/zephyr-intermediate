@@ -10,7 +10,23 @@ LOG_MODULE_REGISTER(homework, LOG_LEVEL_INF);
 #define EVENT_PERIOD_MS        250
 #define MAINTENANCE_LOAD_US  45000
 
-#define DEADLINE_MS              5
+/*
+ * Guarantee: control work starts within DEADLINE_MS (10 ms) of the timer
+ * expiry that created the event.
+ *
+ * Root cause of the original misses (CONTROL_PRIORITY 7, MAINTENANCE_PRIORITY 4):
+ * the timer ISR makes both threads ready at the same instant. In Zephyr a
+ * lower number is a higher priority, so maintenance (4) ran first and spent
+ * MAINTENANCE_LOAD_US (45 ms) in k_busy_wait() before control (7) could run.
+ * Every event started ~45 ms late, regardless of how little work control does.
+ *
+ * Fix: control gets the higher priority (4) and maintenance the lower one (7).
+ * When both become ready, control runs immediately and maintenance does its
+ * 45 ms afterwards; maintenance has no short deadline, so the delay is harmless.
+ * See README.md (L6 Task 1) for logs, trace excerpts and thread lists.
+ */
+#define DEADLINE_MS             10
+
 struct control_event {
     uint32_t seq;
     uint32_t ready_ms;
@@ -68,20 +84,28 @@ static void control_fn(void *p1, void *p2, void *p3)
             continue;
         }
 
-        LOG_INF("[CONTROL] processed seq=%u", event.seq);
-
-        /* TODO: Define a response-time guarantee. */
-        /* TODO: Measure latency and count every deadline miss. */         
+        /*
+         * Latency = time from the timer expiry (ready_ms, taken in the ISR)
+         * until control starts its work for this event. It is measured
+         * immediately after k_msgq_get() returns, before any logging, so it
+         * covers ISR -> control wake-up plus any time control spent waiting
+         * for higher-priority threads. Resolution is one system tick.
+         */
         uint32_t latency_ms = k_uptime_get_32() - event.ready_ms;
-       
-        if (latency_ms > DEADLINE_MS) {
+        bool missed = latency_ms > DEADLINE_MS;
+
+        if (missed) {
             deadline_misses++;
-            /* TODO: Rate-limit repeated warning messages. */
+        }
+
+        /* One line per event: seq, latency and running miss count. */
+        LOG_INF("[CONTROL] seq=%u latency=%ums deadline=%ums misses=%u",
+                event.seq, latency_ms, DEADLINE_MS, deadline_misses);
+
+        if (missed) {
+            /* Rate-limited so a persistent fault does not flood the log. */
             LOG_WRN_RATELIMIT("[CONTROL] deadline_miss count=%u seq=%u latency=%ums",
-                                deadline_misses, event.seq, latency_ms);
-        } else {
-            LOG_INF("[CONTROL] event_done seq=%u latency=%ums",
-                    event.seq, latency_ms);
+                              deadline_misses, event.seq, latency_ms);
         }
 
         /* TODO: Add an application trace event for completion. */
