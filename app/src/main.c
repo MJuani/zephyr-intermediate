@@ -7,7 +7,8 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_DBG);
 #define PRIO            5
 #define INCREMENTS      1000000   /* each thread increments this many times */
 
-/* Shared state - intentionally unprotected */
+#define USE_MUTEX       1
+
 static volatile uint32_t counter;
 
 static struct k_sem done_sem;
@@ -19,9 +20,13 @@ void worker_fn(void *p1, void *p2, void *p3)
     const char *name = k_thread_name_get(k_current_get());
 
     for (int i = 0; i < INCREMENTS; i++) {
+#if USE_MUTEX
         k_mutex_lock(&counter_mutex, K_FOREVER);
+#endif        
         counter++;
+#if USE_MUTEX        
         k_mutex_unlock(&counter_mutex);
+#endif        
     }
 
     LOG_INF("[%s] finished", name);
@@ -38,7 +43,11 @@ int main(void)
     k_sem_init(&done_sem, 0, 2);
     int64_t time = k_uptime_get();
 
-    LOG_INF("=== L2 Task 1: Mutex Protection ===");
+#if USE_MUTEX    
+    LOG_INF("=== L2 Task 1: Mutex Protection (Protected) ===");
+#else
+    LOG_INF("=== L2 Task 1: Mutex Protection (Unprotected) ===");
+#endif    
     LOG_INF("Expected final value: %d", INCREMENTS * 2);
 
     /* Wait for both workers to complete */
