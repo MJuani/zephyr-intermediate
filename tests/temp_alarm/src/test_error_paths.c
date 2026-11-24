@@ -54,6 +54,9 @@ ZTEST(temp_alarm_sensor_errors, test_fetch_error_propagates)
 	zassert_ok(temp_alarm_get_status(&status), "get_status must succeed");
 
 	zassert_equal(status.last_error, -EIO, "last_error should be -EIO");
+
+	zassert_equal(fake_sensor_channel_get_fake.call_count, 0,
+		      "channel_get must not be called after a failed fetch");
 }
 
 ZTEST(temp_alarm_sensor_errors, test_channel_get_error_propagates)
